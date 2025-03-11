@@ -1,36 +1,39 @@
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import padding
-from curl_cffi import requests as requests2
-from Crypto.Util.Padding import pad, unpad
-from flask import Flask, request
-from colorama import Fore as f
-from colorama import Fore as b
-from javascript import require
-from Crypto.Cipher import AES
+import base64
+import binascii
+import contextlib
+import ctypes
+import hashlib
+import json
+import json as std_json
+import logging
+import os
+import random
+import secrets
+import socket
+import string
+import struct
+import sys
+import threading
+import time
+import traceback
+import uuid
 from datetime import datetime
 from io import BytesIO
 
-import numpy as np
-import contextlib
-import traceback
-import threading
-import binascii
-import secrets
-import hashlib
-import logging
-import string
-import ctypes
-import random
-import struct
-import base64
-import execjs
 import colr
-import json
-import uuid
-import time
-import sys
-import os
+import execjs
+import numpy as np
+import requests
+from colorama import Fore as b
+from colorama import Fore as f
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad, unpad
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from curl_cffi import requests as requests2
+from flask import Flask, request
+from javascript import require
 
 jsdom = require('jsdom')
 create_script = require("vm").Script
@@ -39,6 +42,77 @@ with open("webgl.json") as file:
     webgls=json.loads(file.read())
 with open("arkose.js") as file:
     gctx = execjs.compile(file.read())
+
+apikey = "yourapi"
+
+def save_debug_image(base64_img):
+    try:
+        img_data = base64.b64decode(base64_img)
+        random_id = random.randint(100000, 999999)  
+        filename = f"debug_captcha_{random_id}.png"
+        with open(filename, "wb") as f:
+            f.write(img_data)
+    except Exception as e:
+        print(f"⚠️ Error menyimpan gambar: {e}")
+
+def encode_image_to_base64(image_path):
+    with open(image_path, "rb") as img_file:
+        return base64.b64encode(img_file.read()).decode("utf-8")
+
+def solve_captcha(image_base64, captcha_text):
+    url = "your_image_solver"
+
+    payload = {
+        "clientKey": apikey,
+        "task": {
+            "type": "FuncaptchaImageTask",
+            "imageBase64": image_base64,
+            "other": captcha_text
+        }
+    }
+
+    headers = {"Content-Type": "application/json"}
+
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        result = response.json()
+
+        if result.get("errorId") == 0 and "taskId" in result:
+            task_id = result["taskId"]
+            print(f"✅ Captcha dikirim! Task ID: {task_id}")
+            return get_captcha_result(task_id)
+        else:
+            return None
+    except Exception as e:
+        return None
+
+def get_captcha_result(task_id):
+    url = "your_url"
+
+    payload = {
+        "clientKey": apikey,
+        "taskId": task_id
+    }
+
+    headers = {"Content-Type": "application/json"}
+
+    while True:
+        response = requests.post(url, json=payload, headers=headers)
+        result = response.json()
+        if result.get("errorId") == 0:
+            if result.get("status") == "ready" and "solution" in result:
+                answer = result["solution"]["answer"]
+                print(f"✅ Captcha berhasil diselesaikan! Jawaban: {answer}")
+                return answer
+            elif result.get("status") == "processing":
+                print("⏳ Menunggu hasil captcha...")
+                time.sleep(5)  
+            else:
+                print(f"❌ Captcha gagal diselesaikan: {result}")
+                return None
+        else:
+            print(f"❌ Error : {result}")
+            return None
 
 class Utils:
     solved=0
@@ -477,7 +551,8 @@ class Funcaptcha:
         }
 
         if self.dapibCode:
-            data['tguess']=Arkose.t_guess(self, self.session_token, answers, self.dapibCode)
+            tguess_value = Arkose.t_guess(self, self.session_token, answers, self.dapibCode)
+            data['tguess'] = tguess_value
 
         response = self.session.post(f'{self.apiurl}/fc/ca/', data=data,headers={
             "Accept": "*/*",
@@ -657,27 +732,54 @@ class Funcaptcha:
                 else:
                     base64_img=base64.b64encode(self.session.get(img).content).decode()
 
-                index=... #Do classification urself!!
+                save_debug_image(base64_img)
+
+                captcha_text = "Use the arrows to rotate the object to face in the direction of the hand"
+                index = solve_captcha(base64_img, captcha_text)
+
+                try:
+                    index = int(index) 
+                except ValueError:
+                    print(f"⚠️ Error: Hasil captcha bukan angka! Respon: {index}")
+                    index = None 
+
+                if result["game_data"]["gameType"] == 4:
+                    print("📢 gameType: 4 | Jawaban Sebelum:", index)
+                    index -= 1 
+                    print("📢 gameType: 4 | Jawaban Sesudah:", index)
 
                 if result["game_data"]["gameType"]==3:
                     index+=1
-                    
+
                 test.append(str(index))
 
                 if result["game_data"]["gameType"]==4:
                     answers.append(json.dumps({"index":index}).replace(" ",""))
-
                 elif result["game_data"]["gameType"]==3:
                     answers.append(json.dumps(Utils.grid_answer_dict(index)).replace(" ",""))
+                time.sleep(3)
+
+
+
+                print(f"🔎 Format Jawaban Sebelum Enkripsi: {answers}")
+                final_payload = json.dumps([json.loads(a) for a in answers], separators=(',', ':'))
+                print(f"🔐 Data yang Akan Dienkripsi: {final_payload}")
+                print(f"🆔 Session Token: {self.session_token}")
+
+                encrybang = Arkose.encrypt_double(self, self.session_token, final_payload)
+                print(f"🛠 Data Setelah Enkripsi: {encrybang}")
+
                     
                 solveresult=self.answer(
-                    result=Arkose.encrypt_double(self, self.session_token, str([",".join(answers)]).replace("'","")),
+                    result=encrybang,
                     answers=answers,
                     i=index
                 )
 
+
                 if image_encryption_enabled:
                     self.image_decryption_key=solveresult.get('decryption_key')
+
 
             if solveresult["solved"]:
                 logger.print(game, f"Waves: {waves}", f"Answers: {str(len(test))}:[{','.join(test)}]", f.LIGHTGREEN_EX+self.token)
@@ -1472,4 +1574,4 @@ def createTask():
     except:
         return {"success":False, "err": "invalid request"}
 
-app.run(port="8003", host="0.0.0.0", debug=False)
+app.run(port="8003", host="0.0.0.0", debug=True)
